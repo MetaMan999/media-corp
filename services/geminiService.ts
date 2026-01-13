@@ -5,10 +5,36 @@ import { NewsItem, Category, EventItem, TweetItem, MarketData, MacroNode } from 
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
 
 /**
- * Utility for exponential backoff retries on rate limits (429)
- * Increased retries and initial delay for more stability on free tier.
+ * Global Request Lock to prevent concurrent bursts.
+ * Free tier quotas are extremely sensitive to parallel requests.
  */
-async function withRetry<T>(fn: () => Promise<T>, retries = 3, delay = 4000): Promise<T> {
+let isApiBusy = false;
+const requestQueue: (() => void)[] = [];
+
+async function acquireLock(): Promise<void> {
+  if (!isApiBusy) {
+    isApiBusy = true;
+    return;
+  }
+  return new Promise((resolve) => requestQueue.push(resolve));
+}
+
+function releaseLock(): void {
+  isApiBusy = false;
+  if (requestQueue.length > 0) {
+    const next = requestQueue.shift();
+    if (next) {
+      isApiBusy = true;
+      next();
+    }
+  }
+}
+
+/**
+ * Utility for aggressive exponential backoff retries on rate limits (429).
+ */
+async function withRetry<T>(fn: () => Promise<T>, retries = 4, delay = 6000): Promise<T> {
+  await acquireLock();
   try {
     return await fn();
   } catch (error: any) {
@@ -20,12 +46,19 @@ async function withRetry<T>(fn: () => Promise<T>, retries = 3, delay = 4000): Pr
                        errorStr.includes('429');
                        
     if (retries > 0 && isRateLimit) {
-      console.warn(`METAMEDIA_CORE: Uplink congested (429). Retrying in ${delay}ms... (${retries} attempts left)`);
+      console.warn(`METAMEDIA_CORE: Node Congested. Backing off ${delay}ms... (${retries} left)`);
+      // Release lock before waiting so we don't block everything indefinitely during wait
+      releaseLock(); 
       await new Promise(resolve => setTimeout(resolve, delay));
-      // Increase delay significantly on each retry to respect backoff
-      return withRetry(fn, retries - 1, delay * 2.5);
+      return withRetry(fn, retries - 1, delay * 2);
     }
     throw error;
+  } finally {
+    // Only release if we didn't throw and recursion didn't already handle it
+    // But with the recursive structure, we must be careful.
+    // If we succeeded, we release. If we failed but are retrying, release is called before wait.
+    // If we failed permanently, we release.
+    if (isApiBusy) releaseLock();
   }
 }
 
@@ -105,7 +138,7 @@ export const fetchLiveMarketTicker = async (): Promise<MarketData[]> => {
       }).filter(m => m.symbol !== "ERR");
     } catch (error) {
       console.error("Ticker node failed:", error);
-      throw error; // Rethrow so withRetry can handle it
+      throw error;
     }
   });
 };

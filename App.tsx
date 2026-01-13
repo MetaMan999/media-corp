@@ -40,7 +40,7 @@ const App: React.FC = () => {
       const data = await fetchLiveMarketTicker();
       if (data.length > 0) setTickerData(data);
     } catch (err) {
-      console.warn("Ticker sync throttled.");
+      console.warn("Ticker node currently busy.");
     } finally {
       setLoadingTicker(false);
     }
@@ -65,7 +65,7 @@ const App: React.FC = () => {
       console.error("LoadData failed:", err);
       const errStr = JSON.stringify(err).toUpperCase();
       if (errStr.includes('429') || errStr.includes('QUOTA') || errStr.includes('EXHAUSTED')) {
-        setError("NETWORK_CONGESTION: COOLING_DOWN...");
+        setError("NODE_COOLING_DOWN: RETRY_IN_60S");
       } else {
         setError("UPLINK_FAILURE: PACKET_LOSS");
       }
@@ -80,25 +80,25 @@ const App: React.FC = () => {
       const eventData = await fetchGlobalEvents();
       setEvents(eventData.events);
     } catch (err) {
-      console.warn("Event monitor sync failed.");
+      console.warn("Event monitor currently busy.");
     } finally {
       setLoadingEvents(false);
     }
   }, []);
 
-  // Staggered initialization to avoid hitting rate limits immediately on load
+  // Staggered initialization
   useEffect(() => {
     const initSequence = async () => {
-      // 1. Load Ticker immediately
+      // Step 1: Market Ticker
       await loadTicker();
       
-      // 2. Wait 2 seconds before loading events
+      // Step 2: Global Events (Wait 10s)
       setTimeout(() => {
         loadEvents();
-      }, 2000);
+      }, 10000);
 
-      // Ticker refresh interval
-      tickerInterval.current = setInterval(loadTicker, 120000); // Relaxed to 2 mins
+      // Relaxed Ticker Refresh: 3 Minutes
+      tickerInterval.current = setInterval(loadTicker, 180000);
     };
 
     initSequence();
@@ -106,14 +106,14 @@ const App: React.FC = () => {
     return () => clearInterval(tickerInterval.current);
   }, [loadTicker, loadEvents]);
 
-  // Handle Social Auto Refresh
+  // Handle Social Auto Refresh: Relaxed to 2.5 Minutes
   useEffect(() => {
     if (socialRefreshInterval.current) clearInterval(socialRefreshInterval.current);
     
     if (activeCategory === Category.SOCIAL && autoRefreshSocial && !loadingContent) {
       socialRefreshInterval.current = setInterval(() => {
         loadData(Category.SOCIAL);
-      }, 90000); // Relaxed to 90 seconds
+      }, 150000); 
     }
 
     return () => {
@@ -121,12 +121,12 @@ const App: React.FC = () => {
     };
   }, [activeCategory, autoRefreshSocial, loadData, loadingContent]);
 
-  // Debounced Category Switch
+  // Debounced Category Switch: 1s debounce to avoid rapid clicks
   useEffect(() => {
     if (categoryTimer.current) clearTimeout(categoryTimer.current);
     categoryTimer.current = setTimeout(() => {
       loadData(activeCategory);
-    }, 600); // Longer debounce
+    }, 1000);
     
     return () => clearTimeout(categoryTimer.current);
   }, [activeCategory, loadData]);
